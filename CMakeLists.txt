@@ -10,11 +10,13 @@ option(WITH_REALSENSE "Enable Intel RealSense SDK" ON)
 
 find_package(OpenCV REQUIRED)
 find_package(Eigen3 REQUIRED NO_MODULE)
+find_package(CUDAToolkit REQUIRED)
 
 include_directories(
     ${CMAKE_SOURCE_DIR}/include
     ${OpenCV_INCLUDE_DIRS}
     ${EIGEN3_INCLUDE_DIR}
+    ${CUDAToolkit_INCLUDE_DIRS}
 )
 
 set(ONNXRUNTIME_ROOT "${CMAKE_SOURCE_DIR}/third_party/onnxruntime")
@@ -55,6 +57,7 @@ add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS})
 target_link_libraries(${PROJECT_NAME}
     ${OpenCV_LIBS}
     Eigen3::Eigen
+    CUDA::cudart
 )
 
 if(EXISTS "${ONNXRUNTIME_ROOT}/lib")
@@ -66,7 +69,7 @@ if(EXISTS "${ONNXRUNTIME_ROOT}/lib")
 endif()
 
 if(WITH_TENSORRT AND EXISTS "${TENSORRT_ROOT}/lib")
-    target_link_libraries(${PROJECT_NAME} nvinfer nvonnxparser cudart)
+    target_link_libraries(${PROJECT_NAME} nvinfer nvonnxparser)
 endif()
 
 if(realsense2_FOUND)
