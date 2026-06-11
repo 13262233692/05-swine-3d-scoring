@@ -1,1 +1,187 @@
 # 05-swine-3d-scoring
+
+智慧农业 AI 边缘计算项目 —— 基于 RGB-D 深度相机与 PointNet++ 的生猪三维体测关键点提取引擎。
+
+## 系统架构
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                     猪舍顶部边缘盒子 (Jetson / x86_64 + CUDA)         │
+│                                                                      │
+│  ┌──────────────┐   ┌────────────────────┐   ┌───────────────────┐   │
+│  │ Intel D435i  │──▶│  16-bit 深度解码    │──▶│ 反投影(内参矩阵)  │   │
+│  │  RGB-D 相机  │   │  + RGB 对齐 (60fps) │   │ → 稠密彩色点云    │   │
+│  └──────────────┘   └────────────────────┘   └────────┬──────────┘   │
+│                                                        │              │
+│                              ┌─────────────────────────▼──────────┐   │
+│                              │  点云预处理 (PassThrough + Voxel)   │   │
+│                              │  - 切除水泥地面/钢管背景            │   │
+│                              │  - 体素下采样 → 固定 2048 点        │   │
+│                              └─────────────────────────┬──────────┘   │
+│                                                        │              │
+│                              ┌─────────────────────────▼──────────┐   │
+│                              │  PointNet++ (ONNX Runtime + TRT)   │   │
+│                              │  输入: [1, 2048, 3]                 │   │
+│                              │  输出: [1, 12, 3] 三维关键点坐标    │   │
+│                              └─────────────────────────┬──────────┘   │
+│                                                        │              │
+│                              ┌─────────────────────────▼──────────┐   │
+│                              │  反归一化 → 真实物理坐标 (米)       │   │
+│                              │  KNN 投影 → 点云表面                │   │
+│                              │  EMA 时序平滑 → 抗猪只扭动          │   │
+│                              │  → 12 个核心骨架关键点              │   │
+│                              └─────────────────────────┬──────────┘   │
+│                                                        │              │
+│                              ┌─────────────────────────▼──────────┐   │
+│                              │  体测指标计算:                       │   │
+│                              │  体长 / 体宽 / 体高 / 背膘厚 / 胸围  │   │
+│                              └────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+## 项目结构
+
+```
+05-swine-3d-scoring/
+├── CMakeLists.txt
+├── include/
+│   ├── common_types.h                    # 数据类型定义 (点云、关键点、体测…)
+│   ├── point_cloud_reconstructor.h       # 深度图 → 3D 点云反投影
+│   ├── point_cloud_preprocessor.h        # PassThrough / Voxel / 采样 / 归一化
+│   ├── pointnet_inference_engine.h       # ONNX Runtime + TensorRT 推理封装
+│   ├── keypoint_post_processor.h         # 反归一化/KNN投影/EMA平滑/体测
+│   └── rgb_camera_capture.h              # Intel RealSense 采集封装
+├── src/
+│   ├── main.cpp                          # 主程序 (demo / infer / camera / image)
+│   ├── point_cloud_reconstructor.cpp
+│   ├── point_cloud_preprocessor.cpp
+│   ├── pointnet_inference_engine.cpp
+│   ├── keypoint_post_processor.cpp
+│   └── rgb_camera_capture.cpp
+└── config/
+    ├── camera_intrinsics.yaml            # 相机内参 (fx, fy, cx, cy, depth_scale)
+    └── pipeline_config.yaml              # 直通滤波、体素大小、推理参数
+```
+
+## 12 个核心关键点 (KeypointType)
+
+| 索引 | 枚举 | 说明 |
+|------|------|------|
+| 0 | LEFT_EAR | 左耳尖 |
+| 1 | RIGHT_EAR | 右耳尖 |
+| 2 | LEFT_SHOULDER | 左肩端 |
+| 3 | RIGHT_SHOULDER | 右肩端 |
+| 4 | WITHERS | 鬐甲 (体高点) |
+| 5 | BACK_FAT_TOP | 背膘检测点(上) |
+| 6 | BACK_FAT_BOTTOM | 背膘检测点(下) |
+| 7 | CROSS_SECTION | 十字部 |
+| 8 | LEFT_HIP | 左髋关节 |
+| 9 | RIGHT_HIP | 右髋关节 |
+| 10 | RUMP | 臀端 |
+| 11 | TAIL_HEAD | 尾根 |
+
+## 构建依赖
+
+- **C++17** 编译器 (GCC 9+, Clang 10+, MSVC 2019+)
+- **CMake ≥ 3.18**
+- **OpenCV ≥ 4.5** — 图像读写与色彩转换
+- **Eigen3 ≥ 3.3** — 线性代数/向量运算
+- **ONNX Runtime ≥ 1.14** (放入 `third_party/onnxruntime/`)
+  - 头文件: `third_party/onnxruntime/include/`
+  - 库文件: `third_party/onnxruntime/lib/`
+- **TensorRT ≥ 8.5** (可选, 环境变量 `TENSORRT_ROOT`)
+- **CUDA ≥ 11.6** (可选, TensorRT 依赖)
+- **Intel RealSense SDK ≥ 2.50** (可选, 实时采集)
+
+### Windows 快速构建
+
+```powershell
+# 假设 vcpkg 已安装 opencv4 eigen3 realsense2
+cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake `
+      -DONNXRUNTIME_ROOT="D:/libs/onnxruntime-win-x64-gpu-1.16.3" `
+      -DTENSORRT_ROOT="D:/TensorRT-8.6.1.6"
+cmake --build build --config Release
+```
+
+## 运行模式
+
+```bash
+# 1. 纯演示 (合成猪只点云 + mock 关键点, 无需任何硬件/模型)
+./swine_3d_scoring demo
+
+# 2. 加载模型 + 合成数据推理
+./swine_3d_scoring infer models/pointnet2_keypoints.onnx
+
+# 3. 实时相机采集 (RealSense + 模型)
+./swine_3d_scoring camera models/pointnet2_keypoints.onnx
+
+# 4. 离线图像推理 (已保存的 depth.png + rgb.png)
+./swine_3d_scoring image data/frame_0001_depth.png data/frame_0001_rgb.png \
+    models/pointnet2_keypoints.onnx config/camera_intrinsics.yaml
+```
+
+## 核心技术要点
+
+### 1. 深度反投影 (Back-projection)
+
+给定像素 `(u, v)` 和深度值 `Z_m = depth_raw * depth_scale`:
+
+```
+X = (u - cx) * Z_m / fx
+Y = (v - cy) * Z_m / fy
+Z = Z_m
+```
+
+参见 [point_cloud_reconstructor.cpp#L61-L66](file:///d:/SOLO-11/05-swine-3d-scoring/src/point_cloud_reconstructor.cpp#L61-L66)
+
+### 2. 直通滤波 (PassThrough)
+
+切除猪栏外水泥地面 (z < 0.2m) 、两侧钢管 (|y| > 0.6m) 等干扰背景。
+
+参见 [point_cloud_preprocessor.cpp#L57-L69](file:///d:/SOLO-11/05-swine-3d-scoring/src/point_cloud_preprocessor.cpp#L57-L69)
+
+### 3. PointNet++ ONNX 推理
+
+模型期望输入形状 `[batch=1, N=2048, C=3]` (float32), 输出 `[1, 12, 3]` 或 `[1, 12, 4]` (含置信度)。
+可使用 `AppendExecutionProvider_TensorRT` 启用 FP16 加速。
+
+参见 [pointnet_inference_engine.cpp#L30-L65](file:///d:/SOLO-11/05-swine-3d-scoring/src/pointnet_inference_engine.cpp#L30-L65)
+
+### 4. 反归一化 + KNN 投影
+
+网络输出是归一化空间 (centered & unit-farthest-distance) 的坐标, 需:
+1. 乘以下采样时保存的 `scale_factor`, 加上 `centroid` 回到物理空间
+2. 取点云中 K=3 最近点的平均, 将关键点 "贴" 回猪体表面, 避免浮于体外
+
+参见 [keypoint_post_processor.cpp#L136-L157](file:///d:/SOLO-11/05-swine-3d-scoring/src/keypoint_post_processor.cpp#L136-L157)
+
+### 5. EMA 时序平滑
+
+猪只一直在扭动, 对相邻帧的关键点做指数移动平均 (α=0.7):
+```
+P_smooth[t] = α * P_raw[t] + (1 - α) * P_smooth[t-1]
+```
+
+参见 [keypoint_post_processor.cpp#L234-L251](file:///d:/SOLO-11/05-swine-3d-scoring/src/keypoint_post_processor.cpp#L234-L251)
+
+## PointNet++ 模型导出 (PyTorch → ONNX)
+
+```python
+import torch
+import onnx
+from pointnet2_ops import pointnet2_utils
+
+# 假设已训练的模型输出 [B, 12, 3] 关键点坐标
+model = YourPointNet2KeypointNet(num_keypoints=12)
+model.load_state_dict(torch.load("pointnet2_keypoints.pth"))
+model.eval()
+
+dummy = torch.randn(1, 2048, 3)
+torch.onnx.export(
+    model, dummy, "pointnet2_keypoints.onnx",
+    input_names=["points"],
+    output_names=["keypoints"],
+    opset_version=17,
+    dynamic_axes={"points": {0: "batch"}, "keypoints": {0: "batch"}},
+)
+```

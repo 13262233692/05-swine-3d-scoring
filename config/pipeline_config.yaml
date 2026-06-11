@@ -1,0 +1,30 @@
+%YAML:1.0
+---
+passthrough:
+  x_min: -1.0
+  x_max:  1.0
+  y_min: -0.6
+  y_max:  0.6
+  z_min:  0.2
+  z_max:  1.5
+voxel_size: 0.008
+target_point_count: 2048
+confidence_threshold: 0.3
+smoothing_alpha: 0.7
+inference:
+  use_tensorrt: true
+  device_id: 0
+  intra_threads: 4
+keypoints:
+  - LEFT_EAR
+  - RIGHT_EAR
+  - LEFT_SHOULDER
+  - RIGHT_SHOULDER
+  - WITHERS
+  - BACK_FAT_TOP
+  - BACK_FAT_BOTTOM
+  - CROSS_SECTION
+  - LEFT_HIP
+  - RIGHT_HIP
+  - RUMP
+  - TAIL_HEAD
