@@ -4,6 +4,7 @@
 #include "pointnet_inference_engine.h"
 #include "keypoint_post_processor.h"
 #include "rgb_camera_capture.h"
+#include "swine_weight_estimator.h"
 #include <iostream>
 #include <string>
 #include <chrono>
@@ -12,8 +13,117 @@
 #include <atomic>
 #include <thread>
 #include <iomanip>
+#include <sstream>
 
 using namespace swine3d;
+
+std::string formatKg(float kg) {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(1) << kg << " kg";
+    return oss.str();
+}
+
+std::string formatPct(float pct) {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(1) << pct << "%";
+    return oss.str();
+}
+
+void printWeightReportHeader() {
+    std::cout << std::setfill('=') << std::setw(70) << "" << std::setfill(' ') << std::endl;
+    std::cout << "  🏋️  生猪三维估重报表 | SWINE 3D WEIGHT ESTIMATION REPORT" << std::endl;
+    std::cout << std::setfill('-') << std::setw(70) << "" << std::setfill(' ') << std::endl;
+}
+
+void printWeightReport(const WeightReport& rpt, int pen_id) {
+    std::cout << "\n  栏位 [Pen " << pen_id << "] 估重结果:" << std::endl;
+    std::cout << "    ┌──────────────────────────────────────────────────────┐" << std::endl;
+
+    std::cout << "    │ 🏆 预估体重:  " << std::right << std::setw(18)
+              << formatKg(rpt.estimated_weight_kg)
+              << "           │" << std::endl;
+
+    float span = rpt.weight_upper_95ci_kg - rpt.weight_lower_95ci_kg;
+    std::cout << "    │ 📊 95%置信区间: " << std::right << std::setw(8)
+              << formatKg(rpt.weight_lower_95ci_kg) << " ~ "
+              << std::left << std::setw(10)
+              << formatKg(rpt.weight_upper_95ci_kg)
+              << "       │" << std::endl;
+    std::cout << "    │ ±误差范围: " << std::right << std::setw(12)
+              << formatKg(span * 0.5f)
+              << "  置信度: " << std::left << std::setw(8) << formatPct(rpt.confidence_pct)
+              << " │" << std::endl;
+
+    std::cout << "    ├──────────────────────────────────────────────────────┤" << std::endl;
+    std::cout << "    │ 📐 几何测量 (Geometric Measurements)" << std::endl;
+    std::cout << "    │   体长 Body Length:      " << std::right << std::setw(8)
+              << std::fixed << std::setprecision(1)
+              << rpt.measurements.body_length * 100.0f << " cm" << std::endl;
+    std::cout << "    │   体宽 Body Width:       " << std::right << std::setw(8)
+              << std::fixed << std::setprecision(1)
+              << rpt.measurements.body_width * 100.0f << " cm" << std::endl;
+    std::cout << "    │   体高 Body Height:      " << std::right << std::setw(8)
+              << std::fixed << std::setprecision(1)
+              << rpt.measurements.body_height * 100.0f << " cm" << std::endl;
+    std::cout << "    │   背膘厚 Back-fat:       " << std::right << std::setw(8)
+              << std::fixed << std::setprecision(2)
+              << rpt.measurements.back_fat_thickness * 1000.0f << " mm" << std::endl;
+    std::cout << "    │   胸围 Chest Circum:     " << std::right << std::setw(8)
+              << std::fixed << std::setprecision(1)
+              << rpt.measurements.chest_circumference * 100.0f << " cm" << std::endl;
+
+    std::cout << "    ├──────────────────────────────────────────────────────┤" << std::endl;
+    std::cout << "    │ 💧 体积积分 (Volume Integration, "
+              << rpt.volume.num_integration_slices << " slices)" << std::endl;
+    std::cout << "    │   总体积 Torso:         " << std::right << std::setw(8)
+              << std::fixed << std::setprecision(1)
+              << rpt.volume.torso_volume_liters << " L" << std::endl;
+    std::cout << "    │   背膘脂 Back-fat:      " << std::right << std::setw(8)
+              << std::fixed << std::setprecision(2)
+              << rpt.volume.backfat_volume_liters << " L" << std::endl;
+    std::cout << "    │   腹腔容 Abdomen:       " << std::right << std::setw(8)
+              << std::fixed << std::setprecision(1)
+              << rpt.volume.abdomen_volume_liters << " L" << std::endl;
+    std::cout << "    │   腹底距 BellyClear:    " << std::right << std::setw(8)
+              << std::fixed << std::setprecision(2)
+              << rpt.volume.belly_clearance_m * 100.0f << " cm" << std::endl;
+    std::cout << "    │   积分误差估计:         " << std::right << std::setw(8)
+              << std::fixed << std::setprecision(2)
+              << rpt.volume.integration_error_pct << " %" << std::endl;
+
+    std::cout << "    ├──────────────────────────────────────────────────────┤" << std::endl;
+    std::cout << "    │ 🐖 体况评分 BCS (Body Condition Score, 1~5)" << std::endl;
+    std::cout << "    │   BCS 得分:   " << std::right << std::setw(8)
+              << std::fixed << std::setprecision(2)
+              << rpt.bcs.bcs_score << "   → "
+              << std::left << std::setw(24) << rpt.bcs.body_condition_label << std::endl;
+    std::cout << "    │   脂肪指标 Fat:     " << std::right << std::setw(8)
+              << std::fixed << std::setprecision(2) << rpt.bcs.fat_indicator
+              << "    肌肉指标 Muscle:  " << std::right << std::setw(6)
+              << std::fixed << std::setprecision(2) << rpt.bcs.muscle_indicator << std::endl;
+
+    std::cout << "    ├──────────────────────────────────────────────────────┤" << std::endl;
+    std::cout << "    │ ⚙️  估重模型参数 (Allometric Model)" << std::endl;
+    std::cout << "    │   密度 ρ: " << std::right << std::setw(10)
+              << std::fixed << std::setprecision(3)
+              << rpt.params_used.density_kg_per_liter << " kg/L" << std::endl;
+    std::cout << "    │   异速 a: " << std::right << std::setw(10)
+              << std::fixed << std::setprecision(4)
+              << rpt.params_used.a_coeff
+              << "   异速 b: " << std::right << std::setw(6)
+              << std::fixed << std::setprecision(3)
+              << rpt.params_used.b_exponent << std::endl;
+    std::cout << "    │   品种校正: " << std::right << std::setw(8)
+              << std::fixed << std::setprecision(3)
+              << rpt.params_used.breed_correction
+              << "     性别校正: " << std::right << std::setw(6)
+              << std::fixed << std::setprecision(3)
+              << rpt.params_used.sex_correction << std::endl;
+    std::cout << "    │   估计算法: " << std::left << std::setw(40)
+              << rpt.estimation_method << std::endl;
+
+    std::cout << "    └──────────────────────────────────────────────────────┘" << std::endl;
+}
 
 void printUsage(const char* prog) {
     std::cout << "Usage:\n"
@@ -87,6 +197,7 @@ struct SinglePenResult {
     float scale_factor;
     KeypointSet keypoints;
     BodyMeasurements measurements;
+    WeightReport weight;
     float inference_ms;
     float gpu_mem_mb;
 };
@@ -96,6 +207,7 @@ std::vector<SinglePenResult> runBatchPipeline(
     PointCloudPreprocessor& preprocessor,
     PointNetInferenceEngine& engine,
     KeypointPostProcessor& postprocessor,
+    SwineWeightEstimator& weight_estimator,
     std::vector<KeypointSmoother>& smoothers,
     const std::vector<PointCloud>& raw_clouds,
     bool use_mock_fallback = true) {
@@ -150,6 +262,8 @@ std::vector<SinglePenResult> runBatchPipeline(
 
     float gpu_mem = engine.getCurrentGpuMemoryUsedMb();
 
+    printWeightReportHeader();
+
     std::vector<SinglePenResult> results(num_pens);
     for (int p = 0; p < num_pens; ++p) {
         SinglePenResult& r = results[p];
@@ -171,25 +285,34 @@ std::vector<SinglePenResult> runBatchPipeline(
             }
 
             r.measurements = KeypointPostProcessor::computeMeasurements(r.keypoints);
+
+            r.weight = weight_estimator.computeFullReport(
+                r.keypoints, downsampled_clouds[p], r.measurements);
+
+            printWeightReport(r.weight, p);
         }
     }
 
     auto t1 = std::chrono::high_resolution_clock::now();
     float total_ms = std::chrono::duration<float, std::milli>(t1 - t0).count();
 
-    std::cout << "\n========== Batch Summary (batch=" << num_pens << ") ==========" << std::endl;
-    std::cout << "  Total pipeline: " << total_ms << " ms"
-              << "  |  Inference: " << inference_ms << " ms"
-              << "  |  GPU: " << gpu_mem << " MB" << std::endl;
-
+    float total_weight = 0.0f;
+    int valid_count = 0;
     for (int p = 0; p < num_pens; ++p) {
-        const auto& r = results[p];
-        std::cout << "\n--- Pen " << p << " ---" << std::endl;
-        std::cout << "  Points: " << r.raw_points << " -> " << r.filtered_points << std::endl;
-        std::cout << "  Body length: " << r.measurements.body_length * 100.0f << " cm" << std::endl;
-        std::cout << "  Body width:  " << r.measurements.body_width * 100.0f << " cm" << std::endl;
-        std::cout << "  Back-fat:    " << r.measurements.back_fat_thickness * 1000.0f << " mm" << std::endl;
+        if (results[p].weight.estimated_weight_kg > 0) {
+            total_weight += results[p].weight.estimated_weight_kg;
+            ++valid_count;
+        }
     }
+
+    std::cout << std::setfill('=') << std::setw(70) << "" << std::setfill(' ') << std::endl;
+    std::cout << "  📊 批次汇总: batch=" << num_pens << " | 总耗时: " << total_ms << " ms"
+              << " | 推理: " << inference_ms << " ms | GPU: " << gpu_mem << " MB" << std::endl;
+    if (valid_count > 0) {
+        std::cout << "  🏋️  批次合计体重: " << formatKg(total_weight)
+                  << " | 平均: " << formatKg(total_weight / valid_count) << std::endl;
+    }
+    std::cout << std::setfill('=') << std::setw(70) << "" << std::setfill(' ') << std::endl;
 
     return results;
 }
@@ -206,11 +329,14 @@ int main(int argc, char* argv[]) {
     PointCloudPreprocessor preprocessor;
     PointNetInferenceEngine engine;
     KeypointPostProcessor postprocessor;
+    SwineWeightEstimator weight_estimator;
     std::vector<KeypointSmoother> smoothers(4, KeypointSmoother(0.7f));
 
     engine.setIntraOpNumThreads(4);
     engine.setEnableProfiling(true);
     engine.setOomThresholdMb(3500.0f);
+
+    weight_estimator.setGroundPlaneZ(0.0f);
 
     PassThroughParams pt_params;
     pt_params.x_min = -1.0f;
@@ -233,7 +359,8 @@ int main(int argc, char* argv[]) {
         PointCloud cloud = generateSyntheticPigCloud(8000);
         std::vector<PointCloud> batch_clouds(1, cloud);
         runBatchPipeline(reconstructor, preprocessor, engine,
-                        postprocessor, smoothers, batch_clouds, true);
+                        postprocessor, weight_estimator, smoothers,
+                        batch_clouds, true);
     };
 
     if (mode == "demo") {
@@ -261,7 +388,8 @@ int main(int argc, char* argv[]) {
         }
 
         runBatchPipeline(reconstructor, preprocessor, engine,
-                        postprocessor, smoothers, batch_clouds);
+                        postprocessor, weight_estimator, smoothers,
+                        batch_clouds);
 
     } else if (mode == "stress" && argc >= 3) {
         std::string model_path = argv[2];
@@ -301,7 +429,8 @@ int main(int argc, char* argv[]) {
             }
 
             auto results = runBatchPipeline(reconstructor, preprocessor, engine,
-                                           postprocessor, smoothers, batch_clouds);
+                                           postprocessor, weight_estimator, smoothers,
+                                           batch_clouds);
 
             float gpu_mb = engine.getCurrentGpuMemoryUsedMb();
             max_gpu_mb = std::max(max_gpu_mb, gpu_mb);
@@ -366,7 +495,8 @@ int main(int argc, char* argv[]) {
             std::cout << "Frame " << frame_id++ << ": " << cloud.size() << " points" << std::endl;
             std::vector<PointCloud> batch_clouds(1, cloud);
             runBatchPipeline(reconstructor, preprocessor, engine,
-                            postprocessor, smoothers, batch_clouds);
+                            postprocessor, weight_estimator, smoothers,
+                            batch_clouds);
         }
         cam.close();
 
@@ -390,7 +520,8 @@ int main(int argc, char* argv[]) {
         std::cout << "Loaded " << cloud.size() << " points from images." << std::endl;
         std::vector<PointCloud> batch_clouds(1, cloud);
         runBatchPipeline(reconstructor, preprocessor, engine,
-                        postprocessor, smoothers, batch_clouds);
+                        postprocessor, weight_estimator, smoothers,
+                        batch_clouds);
     } else {
         printUsage(argv[0]);
         return 1;

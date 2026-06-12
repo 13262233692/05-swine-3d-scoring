@@ -89,4 +89,71 @@ struct BodyMeasurements {
           back_fat_thickness(0), chest_circumference(0) {}
 };
 
+struct SpineAnchor6 {
+    Eigen::Vector3f left_shoulder;
+    Eigen::Vector3f right_shoulder;
+    Eigen::Vector3f withers;
+    Eigen::Vector3f back_fat_pt;
+    Eigen::Vector3f cross_section;
+    Eigen::Vector3f rump;
+    Eigen::Vector3f left_hip;
+    Eigen::Vector3f right_hip;
+};
+
+struct BSplineSurfaceResult {
+    bool success;
+    int num_control_points_u;
+    int num_control_points_v;
+    float rmse_fit;
+    std::vector<float> control_point_heights;
+    float surface_area_cm2;
+    float spine_curvature_max;
+};
+
+struct VolumeResult {
+    float torso_volume_liters;
+    float backfat_volume_liters;
+    float abdomen_volume_liters;
+    float belly_clearance_m;
+    int   num_integration_slices;
+    float integration_error_pct;
+};
+
+struct BCSResult {
+    float bcs_score;
+    float bcs_raw;
+    float fat_indicator;
+    float muscle_indicator;
+    float frame_size_adjustment;
+    const char* body_condition_label;
+};
+
+struct AllometricParams {
+    float a_coeff;
+    float b_exponent;
+    float density_kg_per_liter;
+    float breed_correction;
+    float sex_correction;
+
+    AllometricParams()
+        : a_coeff(0.895f)
+        , b_exponent(1.023f)
+        , density_kg_per_liter(1.045f)
+        , breed_correction(1.0f)
+        , sex_correction(1.0f) {}
+};
+
+struct WeightReport {
+    float estimated_weight_kg;
+    float weight_lower_95ci_kg;
+    float weight_upper_95ci_kg;
+    float confidence_pct;
+    VolumeResult volume;
+    BCSResult bcs;
+    BodyMeasurements measurements;
+    AllometricParams params_used;
+    float model_error_ema_kg;
+    const char* estimation_method;
+};
+
 } // namespace swine3d
